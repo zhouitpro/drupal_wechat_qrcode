@@ -1,0 +1,5 @@
+name = Wechat QR code.
+description = Wechat QR code.
+package = ADC
+core = 7.x
+version = 7.x-1.1

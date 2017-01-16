@@ -1,0 +1,174 @@
+<?php
+
+// TODO merge mengYunjie code to the module.
+/**
+ * Implements hook_menu().
+ *
+ * @return array
+ */
+function wechat_qrcode_menu() {
+  $items['admin/config/wechat_info'] = array(
+    'page callback'   => 'drupal_get_form',
+    'page arguments'  => array('wechat_qrcode_config_info'),
+    'access arguments' => array('administer site configuration')
+  );
+  return $items;
+}
+
+/**
+ * menu callback.
+ */
+function wechat_qrcode_config_info() {
+  $form['wechat_appid'] = array(
+    '#title'      => t('AppID'),
+    '#type' => 'textfield',
+    '#default_value' => variable_get('wechat_appid'),
+    '#description' => t('Wehcat AppID.'),
+    '#required' => true,
+  );
+  $form['wechat_appsecret'] = array(
+    '#title'      => t('AppSecret'),
+    '#type' => 'textfield',
+    '#default_value' => variable_get('wechat_appsecret'),
+    '#description' => t('Wehcat AppSecret.'),
+    '#required' => true,
+  );
+  $form['wechat_qrcode_image_style'] = array(
+    '#title'      => t('Qrcode image style'),
+    '#type' => 'select',
+    '#options' => image_style_options(),
+    '#default_value' => variable_get('wechat_qrcode_image_style'),
+    '#description' => t('Qrcode image style.')
+  );
+  return system_settings_form($form);
+}
+
+/**
+ * Get wechat access token.
+ */
+function wechat_qrcode_get_access_token() {
+  $access_token = FALSE;
+  $cache_id = 'wechat_access_token';
+
+  // check cache.
+  if ($cached = cache_get($cache_id)) {
+    $access_token = $cached->data;
+  } else {
+    $appid = variable_get('wechat_appid');
+    $appsecret = variable_get('wechat_appsecret');
+    if ($appid && $appsecret) {
+      $request_result = drupal_http_request("https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid={$appid}&secret={$appsecret}");
+
+      // TODO check drupal_http_request code.
+      $request_result = json_decode($request_result->data, TRUE);
+
+      // cache result.
+      if (isset($request_result['errcode'])) {
+        drupal_set_message($request_result['errorcode'], 'error');
+      } else {
+        $access_token = $request_result['access_token'];
+        cache_set($cache_id, $access_token, 'cache', time() + (int)$request_result['expires_in']);
+      }
+    } else {
+      drupal_set_message(t('Please set your appid and appsecret, goto !settings_page', array(
+        '!settings_page' => l('settings page', 'admin/config/wechat_info')
+      )), 'error');
+    }
+  }
+  return $access_token;
+}
+
+
+/**
+ * Implements hook_block_info().
+ */
+function wechat_qrcode_block_info() {
+  $blocks['wechat_qr_code'] = array(
+    'info'  => t('Wechat Qr code'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ *
+ * @param string $delta
+ *
+ * @return array
+ */
+function wechat_qrcode_block_view($delta = '') {
+  $block = array();
+
+  switch ($delta) {
+    case 'wechat_qr_code':
+      $qrurl = wechat_qrcode_get_qrcode();
+
+      // support image style.
+      if ($qrcode_style = variable_get('wechat_qrcode_image_style')) {
+        $qrurl = image_style_url($qrcode_style, $qrurl);
+      }
+      $block['content'] = theme('image', array(
+        'path' => $qrurl
+      ));
+      break;
+  }
+
+  return $block;
+}
+
+/**
+ * get qrcode.
+ *
+ * @return string
+ */
+function wechat_qrcode_get_qrcode() {
+
+  // default variable.
+  $appid = variable_get('wechat_appid');
+  $appsecret = variable_get('wechat_appsecret');
+  $unique_id = substr(md5($appid . $appsecret), 0, 10);
+  $qrcode_url = 'public://' . $unique_id . '.jpeg';
+
+  // save the qr code to files.
+  if (!file_exists(drupal_realpath($qrcode_url))) {
+
+    if (!$ticket = wechat_qrcode_get_ticket()) {
+      return '';
+    }
+
+    $reqeust_qrcode = drupal_http_request('https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket=' .  $ticket);
+    if ($reqeust_qrcode->code == 200) {
+      file_save_data($reqeust_qrcode->data, $qrcode_url, FILE_EXISTS_REPLACE);
+    }
+  }
+
+  return $qrcode_url;
+}
+
+/**
+ * @return mixed
+ */
+function wechat_qrcode_get_ticket() {
+  $ticket = FALSE;
+
+  // get token.
+  if(!$access_token = wechat_qrcode_get_access_token()) {
+    return $ticket;
+  }
+
+  // this is request body.
+  $qr_request = '{"action_name": "QR_LIMIT_SCENE", "action_info": {"scene": {"scene_id": 100000}}}';
+  $request_result = drupal_http_request('https://api.weixin.qq.com/cgi-bin/qrcode/create?access_token=' . $access_token, array(
+    'data' => $qr_request,
+    'method' => 'POST'
+  ));
+  $request_result = json_decode($request_result->data, TRUE);
+  // cache result.
+  if (isset($request_result['errcode'])) {
+    drupal_set_message($request_result['errorcode'], 'error');
+  } else {
+    $ticket = $request_result['ticket'];
+  }
+  return $ticket;
+}
